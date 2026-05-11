@@ -62,50 +62,32 @@ class ProteinStructureSequenceAdapter(nn.Module):
         self.layer_norm3 = nn.LayerNorm(output_dim)
 
     def forward(self, x, h_state):
-        # x shape [batch_size, seq_len, input_dim]
+        # x: [batch, seq_len, input_dim]
+        # h_state: [batch, hidden_dim] — single question vector, matching training
         batch_size, seq_len, _ = x.size()
-        
-        # Pad the input to max_len
+
         if seq_len < self.max_len:
             pad_size = self.max_len - seq_len
-            padding = torch.zeros(batch_size, pad_size, self.input_dim, device=x.device)
-            x = torch.cat([x, padding], dim=1)  # Shape: [batch_size, max_len, input_dim]
+            padding = torch.zeros(batch_size, pad_size, self.input_dim, device=x.device, dtype=x.dtype)
+            x = torch.cat([x, padding], dim=1)
         elif seq_len > self.max_len:
-            x = x[:, :self.max_len, :]  # Truncate if seq_len > max_len
-        
-        # Project the input
-        x_proj = self.linear_proj(x)  # Shape: [batch_size, max_len, output_dim]
+            x = x[:, :self.max_len, :]
 
-        # Norm1
+        x_proj = self.linear_proj(x)
         x_proj = self.layer_norm1(x_proj)
-        
-        # Positional encoding
         pe = self.pos_encoder()
+        x_pos_encoded = x_proj + pe[:, :x_proj.size(1), :]
 
-        # Apply positional encoding
-        x_pos_encoded = x_proj + pe[:, :x_proj.size(1), :]  # Shape: [batch_size, max_len, output_dim]
-        
-        # Prepare learnable queries
-        queries = self.learnable_queries.unsqueeze(0).expand(batch_size, -1, -1)  # Shape: [batch_size, num_queries, output_dim]
-
-        h_state = self.question_proj(h_state)
-
+        queries = self.learnable_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        # question_proj expects [batch, hidden_dim]; unsqueeze(1) broadcasts to all queries
+        h_state = self.question_proj(h_state).unsqueeze(1)
         queries = queries + h_state
-        # Norm2
         queries = self.layer_norm2(queries)
+        queries_pos_encoded = pe[:, :self.num_queries*2:2, :] + queries
 
-        # Apply positional encoding to queries
-        queries_pos_encoded = pe[:, :self.num_queries*2:2, :] + queries  # Shape: [batch_size, num_queries, output_dim]
-        
-        # Cross-attention
-        attn_output, _ = self.cross_attention(queries_pos_encoded, x_pos_encoded, x_pos_encoded)  # Shape: [batch_size, num_queries, output_dim]
-        
-        # Apply layer normalization
+        attn_output, _ = self.cross_attention(queries_pos_encoded, x_pos_encoded, x_pos_encoded)
         attn_output = self.layer_norm3(attn_output)
-        
-        # Project the output
-        output = self.output_proj(attn_output)  # Shape: [batch_size, num_queries, output_dim]
-        
+        output = self.output_proj(attn_output)
         return output
 
 # Global variables to store the loaded model and adapter
@@ -192,27 +174,27 @@ def generate_answer(pdb_file_path, question):
         else:
             protein_vector = protein_vector[:, :max_length, :]
         
-        # Step 2: Get the hidden state of the question text
+        # Step 2: Get the hidden state of the last question token (paper eq. 8: Qht = LLM(question))
         inputs = tokenizer(f"Human: {question}\nAssistant: ", return_tensors="pt").to(device)
         with torch.no_grad():
             hidden_states = model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True).hidden_states[-1]
-        # shape [1, seq_len, hidden_dim] → expand to [1, num_queries, hidden_dim] for adapter
-        question_hidden_state = hidden_states[:, -1:, :].expand(-1, 256, -1)
-        
-        # Step 3: Input the protein vector and question hidden state into the adapter model to get the new protein embedding
-        # Adapter trained with float16 autocast — use float16 inputs to match
-        # Use zero question hidden state: 4-bit quantized model hidden states are
-        # off-distribution from the full-precision model the adapter was trained with
+        # [1, seq_len, 4096] → [1, 4096]: single vector as used in training
+        question_hidden_state = hidden_states[:, -1, :].half()
+
+        # Step 3: Run adapter in float16 matching training's autocast(float16)
         protein_vector = protein_vector.half()
-        question_hidden_state = torch.zeros(1, 256, 4096, dtype=torch.float16, device=device)
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
 
-        # Step 4: Use the embedding layer of the model to encode the question text
+        # Step 4: Encode question text into embeddings
         inputs_embeds = model.base_model.model.model.embed_tokens(inputs.input_ids)
 
-        # Cast protein_embedding to match model embedding dtype before concatenation
+        # Normalize each protein token to match average text embedding norm
+        # Prevents 256 large-magnitude protein tokens from dominating attention
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
+        avg_text_norm = inputs_embeds.norm(dim=-1).mean()
+        protein_token_norms = protein_embedding.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        protein_embedding = protein_embedding / protein_token_norms * avg_text_norm
 
         # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
