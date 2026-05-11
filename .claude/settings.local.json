@@ -14,7 +14,9 @@
       "PowerShell(py *)",
       "PowerShell(Get-ChildItem \"D:\\\\majorproject\\\\Prot2Chat\\\\prot2chat\\\\base_model\" -Recurse | Select-Object FullName, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}} | Format-Table -AutoSize`   and basemodels saftensors are in Prot2chat/prot2chat/basemodel)",
       "PowerShell(python -c \"from huggingface_hub import hf_hub_download; print\\('hf_hub available'\\)\" 2>&1)",
-      "Bash(nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader)"
+      "Bash(nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader)",
+      "Bash(git remote *)",
+      "Bash(git config *)"
     ]
   }
 }

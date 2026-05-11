@@ -3,11 +3,15 @@ __pycache__/
 *.pyo
 CLAUDE.md
 
-# Model weights (download separately)
+# Model weights and large files (download separately)
 Prot2Chat/prot2chat/base_model/
 Prot2Chat/prot2chat/lora_weights/
 Prot2Chat/prot2chat/adapter_weights/
+Prot2Chat/prot2chat/adapter_weight/
+Prot2Chat/prot2chat/files/prot2chat_ck/
 *.pt
 *.pth
 *.bin
 *.safetensors
+*.7z
+*.zip

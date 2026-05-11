@@ -1,0 +1,22 @@
+# ── Special installs (run these two lines BEFORE pip install -r requirements.txt) ──
+#
+# 1. PyTorch with CUDA 12.1:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# 2. bitsandbytes for Windows (needed for 4-bit quantization on 6GB VRAM):
+#    pip install bitsandbytes --prefer-binary --index-url=https://jllllll.github.io/bitsandbytes-windows-whl
+#
+# Then run:
+#    pip install -r requirements.txt
+# ──────────────────────────────────────────────────────────────────────────────────
+
+flask
+huggingface_hub
+langchain==0.2.5
+langchain-community==0.2.5
+transformers==4.50.3
+modelscope==1.24.1
+biotite
+numpy==1.26.4
+accelerate==0.31.0
+peft==0.11.1
