@@ -160,7 +160,7 @@ def initialize_models(model_path, lora_path, adapter_path):
     # Load adapter model A
     print(f"Loading adapter model: {adapter_path}")
     adapter = ProteinStructureSequenceAdapter(input_dim=1152, output_dim=4096, num_heads=16, num_queries=256, max_len=512)
-    checkpoint = torch.load(adapter_path, map_location="cpu")
+    checkpoint = torch.load(adapter_path, map_location="cpu", weights_only=False)
     adapter.load_state_dict(checkpoint['adapter_model_weight'])
     adapter = adapter.to(device).half()  # float16 — matches training's autocast float16
     adapter.eval()
@@ -232,6 +232,8 @@ def generate_answer(pdb_file_path, question):
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=64,
                 do_sample=False,
+                temperature=1.0,   # override model's default 0.6 (only valid with do_sample=True)
+                top_p=1.0,         # override model's default 0.9 (only valid with do_sample=True)
                 repetition_penalty=1.5,
                 use_cache=False,
             )
