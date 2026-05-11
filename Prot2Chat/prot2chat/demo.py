@@ -230,7 +230,7 @@ def generate_answer(pdb_file_path, question):
                 attention_mask=combined_attention_mask,
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                max_new_tokens=256,
+                max_new_tokens=64,
                 do_sample=False,
                 repetition_penalty=1.5,
                 use_cache=False,
