@@ -127,7 +127,7 @@ def initialize_models(model_path, lora_path, adapter_path):
     if torch.cuda.is_available():
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=torch.float16,  # float16 faster than bfloat16 on most consumer GPUs
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
         )
@@ -135,7 +135,9 @@ def initialize_models(model_path, lora_path, adapter_path):
             model_path,
             quantization_config=bnb_config,
             device_map="cuda:0",
+            low_cpu_mem_usage=True,
         )
+        torch.cuda.empty_cache()
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -157,11 +159,16 @@ def initialize_models(model_path, lora_path, adapter_path):
 
     # Load adapter model A
     print(f"Loading adapter model: {adapter_path}")
-    adapter = ProteinStructureSequenceAdapter(input_dim=1152, output_dim=4096, num_heads=16, num_queries=256, max_len=512).to(device)
-    checkpoint = torch.load(adapter_path, map_location=device)
+    adapter = ProteinStructureSequenceAdapter(input_dim=1152, output_dim=4096, num_heads=16, num_queries=256, max_len=512)
+    checkpoint = torch.load(adapter_path, map_location="cpu")
     adapter.load_state_dict(checkpoint['adapter_model_weight'])
+    adapter = adapter.to(device)  # move to GPU after loading weights
     adapter.eval()
     
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"GPU VRAM used: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
     print("All models loaded successfully")
 
 # Main function: Process PDB file and question, generate answer
