@@ -162,7 +162,7 @@ def initialize_models(model_path, lora_path, adapter_path):
     adapter = ProteinStructureSequenceAdapter(input_dim=1152, output_dim=4096, num_heads=16, num_queries=256, max_len=512)
     checkpoint = torch.load(adapter_path, map_location="cpu")
     adapter.load_state_dict(checkpoint['adapter_model_weight'])
-    adapter = adapter.to(device)  # move to GPU after loading weights
+    adapter = adapter.to(device).half()  # float16 — matches training's autocast float16
     adapter.eval()
     
     if torch.cuda.is_available():
@@ -200,11 +200,11 @@ def generate_answer(pdb_file_path, question):
         question_hidden_state = hidden_states[:, -1:, :].expand(-1, 256, -1)
         
         # Step 3: Input the protein vector and question hidden state into the adapter model to get the new protein embedding
-        # Adapter was trained in float32 — keep it in float32, cast inputs accordingly
-        # Use zero question hidden state: quantized model hidden states are off-distribution
-        # from what the adapter was trained with (full-precision model)
-        protein_vector = protein_vector.float()
-        question_hidden_state = torch.zeros(1, 256, 4096, dtype=torch.float32, device=device)
+        # Adapter trained with float16 autocast — use float16 inputs to match
+        # Use zero question hidden state: 4-bit quantized model hidden states are
+        # off-distribution from the full-precision model the adapter was trained with
+        protein_vector = protein_vector.half()
+        question_hidden_state = torch.zeros(1, 256, 4096, dtype=torch.float16, device=device)
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
 
