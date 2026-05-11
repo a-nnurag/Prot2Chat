@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+CLAUDE.md
+
+# Model weights (download separately)
+Prot2Chat/prot2chat/base_model/
+Prot2Chat/prot2chat/lora_weights/
+Prot2Chat/prot2chat/adapter_weights/
+*.pt
+*.pth
+*.bin
+*.safetensors

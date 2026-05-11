@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\majorproject\" -Force)",
+      "Bash(Select-Object Name, Mode)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(grep -E \"\\\\.\\(py|sh|txt\\)$\")",
+      "Bash(Get-ChildItem *  and check the readme also)",
+      "Bash(grep -E \"\\\\.\\(md|txt|json\\)$\")",
+      "Bash(dir D:\\\\majorproject\\\\Prot2Chat\\\\prot2chat *)",
+      "PowerShell(Get-ChildItem \"D:\\\\majorproject\\\\Prot2Chat\\\\prot2chat\\\\base_model\\\\base\" -Recurse -ErrorAction SilentlyContinue | Select-Object Name, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}} | Format-Table -AutoSize)",
+      "PowerShell(python -c \"import torch; print\\('CUDA available:', torch.cuda.is_available\\(\\)\\); print\\('CUDA device count:', torch.cuda.device_count\\(\\)\\); print\\('PyTorch:', torch.__version__\\)\" 2>&1)",
+      "PowerShell(Get-ChildItem \"D:\\\\majorproject\\\\Prot2Chat\\\\prot2chat\\\\base_model\" -File | ForEach-Object { Write-Host $_.Name, $_.Length })",
+      "PowerShell(py *)",
+      "PowerShell(Get-ChildItem \"D:\\\\majorproject\\\\Prot2Chat\\\\prot2chat\\\\base_model\" -Recurse | Select-Object FullName, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}} | Format-Table -AutoSize`   and basemodels saftensors are in Prot2chat/prot2chat/basemodel)",
+      "PowerShell(python -c \"from huggingface_hub import hf_hub_download; print\\('hf_hub available'\\)\" 2>&1)",
+      "Bash(nvidia-smi --query-gpu=driver_version,compute_cap --format=csv,noheader)"
+    ]
+  }
+}
