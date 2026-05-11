@@ -194,8 +194,10 @@ def generate_answer(pdb_file_path, question):
         
         # Step 3: Input the protein vector and question hidden state into the adapter model to get the new protein embedding
         # Adapter was trained in float32 — keep it in float32, cast inputs accordingly
+        # Use zero question hidden state: quantized model hidden states are off-distribution
+        # from what the adapter was trained with (full-precision model)
         protein_vector = protein_vector.float()
-        question_hidden_state = question_hidden_state.float()
+        question_hidden_state = torch.zeros(1, 256, 4096, dtype=torch.float32, device=device)
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
 
@@ -205,20 +207,12 @@ def generate_answer(pdb_file_path, question):
         # Cast protein_embedding to match model embedding dtype before concatenation
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
 
-        # Debug: log tensor scales to help diagnose output quality issues
+        # Debug: log tensor scales
         print(f"[DEBUG] protein_embedding: mean={protein_embedding.abs().mean().item():.4f}, std={protein_embedding.std().item():.4f}")
         print(f"[DEBUG] inputs_embeds:     mean={inputs_embeds.abs().mean().item():.4f}, std={inputs_embeds.std().item():.4f}")
 
-        # Normalize protein_embedding to match the scale of text embeddings
-        embed_std = inputs_embeds.std()
-        protein_std = protein_embedding.std()
-        if protein_std > 0:
-            protein_embedding = protein_embedding * (embed_std / protein_std)
-
         # Step 5: Concatenate the protein embedding and text embedding, input into the model to get the answer
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
-        seq_len = combined_embeds.size(1)
-        position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0)
         combined_attention_mask = torch.cat([
             torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device, dtype=inputs.attention_mask.dtype),
             inputs.attention_mask
@@ -229,13 +223,11 @@ def generate_answer(pdb_file_path, question):
             generated_ids = model.generate(
                 inputs_embeds=combined_embeds,
                 attention_mask=combined_attention_mask,
-                position_ids=position_ids,
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=256,
                 do_sample=False,
                 repetition_penalty=1.3,
-                temperature=1.0,
             )
         
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
