@@ -207,11 +207,7 @@ def generate_answer(pdb_file_path, question):
         # Cast protein_embedding to match model embedding dtype before concatenation
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
 
-        # Debug: log tensor scales
-        print(f"[DEBUG] protein_embedding: mean={protein_embedding.abs().mean().item():.4f}, std={protein_embedding.std().item():.4f}")
-        print(f"[DEBUG] inputs_embeds:     mean={inputs_embeds.abs().mean().item():.4f}, std={inputs_embeds.std().item():.4f}")
-
-        # Step 5: Concatenate the protein embedding and text embedding, input into the model to get the answer
+        # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
         combined_attention_mask = torch.cat([
             torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device, dtype=inputs.attention_mask.dtype),
@@ -219,6 +215,8 @@ def generate_answer(pdb_file_path, question):
         ], dim=1)
 
         # Generate the answer
+        # use_cache=False: forces full attention recomputation each step, fixing
+        # KV-cache position drift that causes coherent start then gibberish
         with torch.no_grad():
             generated_ids = model.generate(
                 inputs_embeds=combined_embeds,
@@ -227,7 +225,8 @@ def generate_answer(pdb_file_path, question):
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=256,
                 do_sample=False,
-                repetition_penalty=1.3,
+                repetition_penalty=1.5,
+                use_cache=False,
             )
         
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
