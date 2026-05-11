@@ -207,15 +207,22 @@ def generate_answer(pdb_file_path, question):
 
         # Step 5: Concatenate the protein embedding and text embedding, input into the model to get the answer
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
-        combined_attention_mask = torch.cat([torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device), inputs.attention_mask], dim=1)
-        
+        combined_attention_mask = torch.cat([
+            torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device, dtype=inputs.attention_mask.dtype),
+            inputs.attention_mask
+        ], dim=1)
+
         # Generate the answer
         with torch.no_grad():
             generated_ids = model.generate(
                 inputs_embeds=combined_embeds,
                 attention_mask=combined_attention_mask,
                 pad_token_id=tokenizer.eos_token_id,
-                max_new_tokens=128
+                eos_token_id=tokenizer.eos_token_id,
+                max_new_tokens=256,
+                do_sample=False,
+                repetition_penalty=1.3,
+                temperature=1.0,
             )
         
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
