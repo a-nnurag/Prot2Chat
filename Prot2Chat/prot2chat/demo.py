@@ -193,17 +193,18 @@ def generate_answer(pdb_file_path, question):
         question_hidden_state = hidden_states[:, -1:, :].expand(-1, 256, -1)
         
         # Step 3: Input the protein vector and question hidden state into the adapter model to get the new protein embedding
-        # Cast to match model dtype to avoid Half/float mismatch with quantized model
-        model_dtype = next(model.parameters()).dtype
-        protein_vector = protein_vector.to(dtype=model_dtype)
-        question_hidden_state = question_hidden_state.to(dtype=model_dtype)
-        adapter.to(dtype=model_dtype)
+        # Adapter was trained in float32 — keep it in float32, cast inputs accordingly
+        protein_vector = protein_vector.float()
+        question_hidden_state = question_hidden_state.float()
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
-        
+
         # Step 4: Use the embedding layer of the model to encode the question text
         inputs_embeds = model.base_model.model.model.embed_tokens(inputs.input_ids)
-        
+
+        # Cast protein_embedding to match model embedding dtype before concatenation
+        protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
+
         # Step 5: Concatenate the protein embedding and text embedding, input into the model to get the answer
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
         combined_attention_mask = torch.cat([torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device), inputs.attention_mask], dim=1)
