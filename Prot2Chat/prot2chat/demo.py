@@ -193,6 +193,11 @@ def generate_answer(pdb_file_path, question):
         question_hidden_state = hidden_states[:, -1:, :].expand(-1, 256, -1)
         
         # Step 3: Input the protein vector and question hidden state into the adapter model to get the new protein embedding
+        # Cast to match model dtype to avoid Half/float mismatch with quantized model
+        model_dtype = next(model.parameters()).dtype
+        protein_vector = protein_vector.to(dtype=model_dtype)
+        question_hidden_state = question_hidden_state.to(dtype=model_dtype)
+        adapter.to(dtype=model_dtype)
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
         
