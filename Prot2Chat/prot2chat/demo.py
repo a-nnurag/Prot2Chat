@@ -97,7 +97,7 @@ adapter = None
 device = None
 
 # Initialize the model and adapter
-def initialize_models(model_path, lora_path, adapter_path):
+def initialize_models(model_path, lora_path, adapter_path, skip_lora=False):
     global model, tokenizer, adapter, device
     
     # Set the device
@@ -128,9 +128,13 @@ def initialize_models(model_path, lora_path, adapter_path):
         )
 
     # Load LoRA weights
-    print(f"Loading LoRA weights: {lora_path}")
-    model = PeftModel.from_pretrained(model, model_id=lora_path)
-    model.eval()
+    if skip_lora:
+        print("Skipping LoRA weights (--no_lora flag set)")
+        model.eval()
+    else:
+        print(f"Loading LoRA weights: {lora_path}")
+        model = PeftModel.from_pretrained(model, model_id=lora_path)
+        model.eval()
 
     # Load tokenizer — prefer lora_path dir (has tokenizer.json), fall back to model_path
     print("Loading tokenizer")
@@ -360,15 +364,15 @@ if __name__ == '__main__':
                         help='Server port')
     parser.add_argument('--gpu', type=str, default="",
                         help='IDs of the GPUs to use, e.g., "0,1". Leave empty for CPU.')
-    
+    parser.add_argument('--no_lora', action='store_true',
+                        help='Skip loading LoRA weights (for diagnosing LoRA compatibility)')
+
     args = parser.parse_args()
-    
-    
+
     if args.gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    
-    
-    initialize_models(args.model_path, args.lora_path, args.adapter_path)
+
+    initialize_models(args.model_path, args.lora_path, args.adapter_path, skip_lora=args.no_lora)
     
     
     app = create_app()
