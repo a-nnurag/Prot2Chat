@@ -189,12 +189,7 @@ def generate_answer(pdb_file_path, question):
         # Step 4: Encode question text into embeddings
         inputs_embeds = model.base_model.model.model.embed_tokens(inputs.input_ids)
 
-        # Normalize each protein token to match average text embedding norm
-        # Prevents 256 large-magnitude protein tokens from dominating attention
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
-        avg_text_norm = inputs_embeds.norm(dim=-1).mean()
-        protein_token_norms = protein_embedding.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        protein_embedding = protein_embedding / protein_token_norms * avg_text_norm
 
         # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
@@ -203,9 +198,6 @@ def generate_answer(pdb_file_path, question):
             inputs.attention_mask
         ], dim=1)
 
-        # Generate the answer
-        # use_cache=False: forces full attention recomputation each step, fixing
-        # KV-cache position drift that causes coherent start then gibberish
         with torch.no_grad():
             generated_ids = model.generate(
                 inputs_embeds=combined_embeds,
@@ -214,10 +206,9 @@ def generate_answer(pdb_file_path, question):
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=64,
                 do_sample=False,
-                temperature=1.0,   # override model's default 0.6 (only valid with do_sample=True)
-                top_p=1.0,         # override model's default 0.9 (only valid with do_sample=True)
-                repetition_penalty=1.5,
-                use_cache=False,
+                temperature=1.0,
+                top_p=1.0,
+                repetition_penalty=1.3,
             )
         
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
