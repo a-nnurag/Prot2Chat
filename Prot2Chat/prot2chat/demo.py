@@ -97,28 +97,38 @@ adapter = None
 device = None
 
 # Initialize the model and adapter
-def initialize_models(model_path, lora_path, adapter_path, skip_lora=False):
+def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_quant=False):
     global model, tokenizer, adapter, device
-    
+
     # Set the device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    
+
     # Load model L (LLaMA model)
     print(f"Loading model: {model_path}")
     if torch.cuda.is_available():
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,  # float16 faster than bfloat16 on most consumer GPUs
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            quantization_config=bnb_config,
-            device_map="cuda:0",
-            low_cpu_mem_usage=True,
-        )
+        if no_quant:
+            # float16 — matches training's autocast(float16); avoids quantization drift
+            print("Loading model in float16 (no quantization)")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                device_map="cuda:0",
+                low_cpu_mem_usage=True,
+            )
+        else:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,  # float16 faster than bfloat16 on most consumer GPUs
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                quantization_config=bnb_config,
+                device_map="cuda:0",
+                low_cpu_mem_usage=True,
+            )
         torch.cuda.empty_cache()
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -206,6 +216,16 @@ def generate_answer(pdb_file_path, question):
         print(f"[DIAG] protein_embedding norm (mean): {prot_norm:.4f}")
         print(f"[DIAG] text inputs_embeds norm (mean): {text_norm:.4f}")
         print(f"[DIAG] protein_embedding min/max: {protein_embedding.min().item():.4f} / {protein_embedding.max().item():.4f}")
+        print(f"[DIAG] norm ratio (prot/text): {prot_norm / (text_norm + 1e-8):.4f}")
+
+        # Scale protein embeddings to match text embedding distribution.
+        # 4-bit quantization shifts hidden state statistics vs the float32 training
+        # environment, causing the adapter output to be at a very different scale
+        # than the LLM's native token embeddings, which causes gibberish output.
+        if text_norm > 0 and prot_norm > 0:
+            scale_factor = text_norm / prot_norm
+            protein_embedding = protein_embedding * scale_factor
+            print(f"[DIAG] applied scale_factor: {scale_factor:.4f}")
 
         # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
@@ -220,10 +240,8 @@ def generate_answer(pdb_file_path, question):
                 attention_mask=combined_attention_mask,
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                max_new_tokens=64,
+                max_new_tokens=128,
                 do_sample=False,
-                temperature=1.0,
-                top_p=1.0,
                 repetition_penalty=1.3,
             )
         
@@ -378,13 +396,15 @@ if __name__ == '__main__':
                         help='IDs of the GPUs to use, e.g., "0,1". Leave empty for CPU.')
     parser.add_argument('--no_lora', action='store_true',
                         help='Skip loading LoRA weights (for diagnosing LoRA compatibility)')
+    parser.add_argument('--no_quant', action='store_true',
+                        help='Load model in float16 instead of 4-bit (recommended: matches training precision, fixes gibberish output)')
 
     args = parser.parse_args()
 
     if args.gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-    initialize_models(args.model_path, args.lora_path, args.adapter_path, skip_lora=args.no_lora)
+    initialize_models(args.model_path, args.lora_path, args.adapter_path, skip_lora=args.no_lora, no_quant=args.no_quant)
     
     
     app = create_app()
