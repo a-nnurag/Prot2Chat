@@ -95,10 +95,12 @@ model = None
 tokenizer = None
 adapter = None
 device = None
+_zero_question = False
 
 # Initialize the model and adapter
-def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_quant=False):
-    global model, tokenizer, adapter, device
+def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_quant=False, zero_question=False):
+    global model, tokenizer, adapter, device, _zero_question
+    _zero_question = zero_question
 
     # Set the device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -193,11 +195,18 @@ def generate_answer(pdb_file_path, question):
         
         # Step 2: Get the hidden state of the last question token (paper eq. 8: Qht = LLM(question))
         inputs = tokenizer(f"Human: {question}\nAssistant: ", return_tensors="pt").to(device)
-        with torch.no_grad():
-            hidden_states = model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True).hidden_states[-1]
-        # [1, seq_len, 4096] → [1, 4096]: single vector as used in training
-        # Cast to float16 — adapter weights are float16; bfloat16 hidden states need conversion
-        question_hidden_state = hidden_states[:, -1, :].to(torch.float16)
+        if _zero_question:
+            # With 4-bit quantization the 32-layer forward pass distorts Qht far from
+            # its training distribution, corrupting adapter query vectors → gibberish.
+            # Using zeros bypasses this: the adapter falls back to its 256 learnable
+            # queries alone, which are trained full-precision weights.
+            question_hidden_state = torch.zeros(1, 4096, device=device, dtype=torch.float16)
+            print("[DIAG] using zero question vector (--zero_question mode)")
+        else:
+            with torch.no_grad():
+                hidden_states = model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True).hidden_states[-1]
+            # Cast to float16 — adapter weights are float16; bfloat16 hidden states need conversion
+            question_hidden_state = hidden_states[:, -1, :].to(torch.float16)
 
         # Step 3: Run adapter in float16 matching training's autocast(float16)
         protein_vector = protein_vector.half()
@@ -214,22 +223,12 @@ def generate_answer(pdb_file_path, question):
 
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
 
-        # Diagnostic: print embedding norms to detect scale mismatch
+        # Diagnostic: print embedding norms
         prot_norm = protein_embedding.norm(dim=-1).mean().item()
         text_norm = inputs_embeds.norm(dim=-1).mean().item()
         print(f"[DIAG] protein_embedding norm (mean): {prot_norm:.4f}")
         print(f"[DIAG] text inputs_embeds norm (mean): {text_norm:.4f}")
-        print(f"[DIAG] protein_embedding min/max: {protein_embedding.min().item():.4f} / {protein_embedding.max().item():.4f}")
         print(f"[DIAG] norm ratio (prot/text): {prot_norm / (text_norm + 1e-8):.4f}")
-
-        # Scale protein embeddings to match text embedding distribution.
-        # 4-bit quantization shifts hidden state statistics vs the float32 training
-        # environment, causing the adapter output to be at a very different scale
-        # than the LLM's native token embeddings, which causes gibberish output.
-        if text_norm > 0 and prot_norm > 0:
-            scale_factor = text_norm / prot_norm
-            protein_embedding = protein_embedding * scale_factor
-            print(f"[DIAG] applied scale_factor: {scale_factor:.4f}")
 
         # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
@@ -402,14 +401,18 @@ if __name__ == '__main__':
     parser.add_argument('--no_lora', action='store_true',
                         help='Skip loading LoRA weights (for diagnosing LoRA compatibility)')
     parser.add_argument('--no_quant', action='store_true',
-                        help='Load model in float16 instead of 4-bit (recommended: matches training precision, fixes gibberish output)')
+                        help='Load model in float16 instead of 4-bit. Uses device_map=auto to offload layers to CPU when VRAM is limited. Matches training precision; recommended if you have >=16 GB system RAM.')
+    parser.add_argument('--zero_question', action='store_true',
+                        help='Use a zero vector for question conditioning instead of LLM hidden states. Bypasses 4-bit quantization distortion of Qht. Try this first on low-VRAM (<=8 GB) systems.')
 
     args = parser.parse_args()
 
     if args.gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-    initialize_models(args.model_path, args.lora_path, args.adapter_path, skip_lora=args.no_lora, no_quant=args.no_quant)
+    initialize_models(args.model_path, args.lora_path, args.adapter_path,
+                      skip_lora=args.no_lora, no_quant=args.no_quant,
+                      zero_question=args.zero_question)
     
     
     app = create_app()
