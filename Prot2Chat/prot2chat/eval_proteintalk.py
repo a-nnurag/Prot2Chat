@@ -51,38 +51,58 @@ def load_test_samples(n_samples: int, seed: int = 42):
     )
     print(f"[DATASET] ZIP downloaded: {zip_path}")
 
-    # Find the test JSON inside the ZIP
+    # Load protein function / general function JSONs (most relevant to Prot2Chat evaluation)
+    PRIORITY_FILES = ["protein_function.json", "general_function.json",
+                      "catalytic_activity.json", "domain_motif.json"]
     all_samples = []
     with zipfile.ZipFile(zip_path, "r") as zf:
         names = zf.namelist()
-        print(f"[DATASET] Files in ZIP: {names[:20]}")
-        # Prefer a dedicated test split; fall back to train if absent
-        test_files = [n for n in names if "test" in n.lower() and n.endswith(".json")]
-        if not test_files:
-            test_files = [n for n in names if n.endswith(".json")]
-        print(f"[DATASET] Using files: {test_files}")
-        for fname in test_files:
+        chosen = [n for n in names
+                  if any(n.endswith(p) for p in PRIORITY_FILES) and "__MACOSX" not in n]
+        if not chosen:
+            chosen = [n for n in names if n.endswith(".json") and "__MACOSX" not in n]
+        print(f"[DATASET] Loading files: {chosen}")
+        for fname in chosen:
             with zf.open(fname) as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     all_samples.extend(data)
-                elif isinstance(data, dict):
-                    # Some dumps wrap records under a key
-                    for v in data.values():
-                        if isinstance(v, list):
-                            all_samples.extend(v)
+            print(f"[DATASET]   {fname}: {len(data)} records")
 
     print(f"[DATASET] Total samples loaded: {len(all_samples)}")
 
-    # Filter to entries with a protein AA sequence as input
+    def clean_input(raw: str) -> str:
+        """Strip markdown code fences the dataset wraps sequences in."""
+        s = raw.strip()
+        if s.startswith("```"):
+            s = s.lstrip("`").strip()
+        if s.endswith("```"):
+            s = s.rstrip("`").strip()
+        return s.strip()
+
     aa_pattern = re.compile(r'^[ACDEFGHIKLMNPQRSTVWY]+$', re.IGNORECASE)
-    valid = [
-        s for s in all_samples
-        if isinstance(s.get("input", ""), str)
-        and aa_pattern.match(s["input"].strip())
-        and 20 <= len(s["input"].strip()) <= 500
-        and s.get("output", "").strip()
-    ]
+
+    # Prefer official test split; fall back to all if no test entries found
+    test_only = [s for s in all_samples
+                 if isinstance(s.get("metadata"), dict)
+                 and s["metadata"].get("split") == "test"]
+    pool = test_only if test_only else all_samples
+    print(f"[DATASET] Test-split entries: {len(test_only)} "
+          f"({'using test split' if test_only else 'no split tag — using all'})")
+
+    valid = []
+    for s in pool:
+        seq = clean_input(s.get("input", ""))
+        if (aa_pattern.match(seq)
+                and 20 <= len(seq) <= 500
+                and s.get("output", "").strip()):
+            s = dict(s)           # copy so we can modify
+            s["input"] = seq      # store cleaned sequence
+            # attach UniProt accession if present for AlphaFold lookup
+            meta = s.get("metadata") or {}
+            s["uniprot_id"] = meta.get("protein_accession", "")
+            valid.append(s)
+
     print(f"[DATASET] Valid AA-sequence samples (20–500 AA): {len(valid)}")
 
     random.seed(seed)
@@ -140,22 +160,32 @@ def sequence_to_uniprot(sequence: str) -> str | None:
     return None
 
 
-def get_structure(sequence: str, tmp_dir: str, idx: int) -> str | None:
-    """Get PDB file for a sequence. Tries ESMFold first, then AlphaFold via UniProt."""
+def get_structure(sequence: str, tmp_dir: str, idx: int, uniprot_id: str = "") -> str | None:
+    """Get PDB file for a sequence.
+    Order: AlphaFold (UniProt ID from metadata) → AlphaFold (UniProt lookup) → ESMFold."""
     pdb_path = os.path.join(tmp_dir, f"protein_{idx}.pdb")
 
-    print(f"  Folding with ESMFold (seq length={len(sequence)})...")
-    if fold_with_esmfold(sequence, pdb_path):
-        print(f"  ESMFold OK → {pdb_path}")
-        return pdb_path
+    # 1. AlphaFold with known UniProt ID (fastest, most reliable)
+    if uniprot_id:
+        print(f"  Fetching AlphaFold PDB for {uniprot_id}...")
+        if fetch_alphafold_pdb(uniprot_id, pdb_path):
+            print(f"  AlphaFold OK → {pdb_path}")
+            return pdb_path
 
-    print(f"  ESMFold failed. Trying AlphaFold via UniProt lookup...")
+    # 2. AlphaFold via UniProt sequence lookup
+    print(f"  Looking up UniProt ID by sequence...")
     uid = sequence_to_uniprot(sequence)
     if uid:
         print(f"  UniProt ID: {uid}")
         if fetch_alphafold_pdb(uid, pdb_path):
             print(f"  AlphaFold OK → {pdb_path}")
             return pdb_path
+
+    # 3. ESMFold as last resort
+    print(f"  Falling back to ESMFold (seq length={len(sequence)})...")
+    if fold_with_esmfold(sequence, pdb_path):
+        print(f"  ESMFold OK → {pdb_path}")
+        return pdb_path
 
     print(f"  Could not get structure for sample {idx}")
     return None
@@ -255,13 +285,12 @@ def main():
     for i, sample in enumerate(samples):
         sequence = sample["input"].strip()
         reference = sample["output"].strip()
-        instruction = sample.get("instruction", args.question).strip()
-        # Use a clean, direct question
+        uniprot_id = sample.get("uniprot_id", "")
         question = args.question
 
-        print(f"[{i+1}/{len(samples)}] seq_len={len(sequence)}")
+        print(f"[{i+1}/{len(samples)}] UniProt={uniprot_id or 'unknown'}  seq_len={len(sequence)}")
 
-        pdb_path = get_structure(sequence, tmp_dir, i)
+        pdb_path = get_structure(sequence, tmp_dir, i, uniprot_id=uniprot_id)
         if pdb_path is None:
             print(f"  Skipping (no structure available)")
             continue
