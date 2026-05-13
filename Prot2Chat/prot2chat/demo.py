@@ -128,10 +128,11 @@ def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_q
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
+            # BitsAndBytes 4-bit cannot offload layers to CPU — must stay on one GPU.
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 quantization_config=bnb_config,
-                device_map="auto",
+                device_map="cuda:0",
                 low_cpu_mem_usage=True,
             )
         torch.cuda.empty_cache()
