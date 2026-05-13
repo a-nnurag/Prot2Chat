@@ -175,68 +175,111 @@ def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_q
 # Main function: Process PDB file and question, generate answer
 def generate_answer(pdb_file_path, question):
     global model, tokenizer, adapter, device
-    
+
+    print(f"\n{'='*60}")
+    print(f"[INFERENCE] PDB: {pdb_file_path}")
+    print(f"[INFERENCE] Question: {question}")
+    print(f"[INFERENCE] zero_question={_zero_question}")
+    print(f"{'='*60}")
+
     # Ensure the models are loaded
     if model is None or tokenizer is None or adapter is None:
         return "Error: Models are not initialized"
-    
+
     try:
-        # Step 1: Process the PDB file to get the protein multi-dimensional vector
+        # Step 1: Process the PDB file → protein embedding (1152-dim per residue)
+        print("[STEP 1] Running ProteinMPNN ensemble on PDB...")
         protein_vector = preprocess.get_mpnn_emb(pdb_file_path).unsqueeze(0).to(device)
-        
-        # Ensure the shape of the protein vector is correct
+        print(f"[STEP 1] Raw protein_vector shape: {protein_vector.shape}  "
+              f"dtype: {protein_vector.dtype}  "
+              f"norm(mean): {protein_vector.norm(dim=-1).mean().item():.4f}")
+
         max_length = 512
-        if max_length > protein_vector.size(1):
-            padding_length = max_length - protein_vector.size(1)
+        orig_len = protein_vector.size(1)
+        if max_length > orig_len:
+            padding_length = max_length - orig_len
             padding = torch.zeros((1, padding_length, 1152), device=device)
             protein_vector = torch.cat([protein_vector, padding], dim=1)
+            print(f"[STEP 1] Padded from {orig_len} → {max_length} residues")
         else:
             protein_vector = protein_vector[:, :max_length, :]
-        
-        # Step 2: Get the hidden state of the last question token (paper eq. 8: Qht = LLM(question))
-        inputs = tokenizer(f"Human: {question}\nAssistant: ", return_tensors="pt").to(device)
-        if _zero_question:
-            # With 4-bit quantization the 32-layer forward pass distorts Qht far from
-            # its training distribution, corrupting adapter query vectors → gibberish.
-            # Using zeros bypasses this: the adapter falls back to its 256 learnable
-            # queries alone, which are trained full-precision weights.
-            question_hidden_state = torch.zeros(1, 4096, device=device, dtype=torch.float16)
-            print("[DIAG] using zero question vector (--zero_question mode)")
-        else:
-            with torch.no_grad():
-                hidden_states = model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True).hidden_states[-1]
-            # Cast to float16 — adapter weights are float16; bfloat16 hidden states need conversion
-            question_hidden_state = hidden_states[:, -1, :].to(torch.float16)
+            print(f"[STEP 1] Truncated from {orig_len} → {max_length} residues")
 
-        # Step 3: Run adapter in float16 matching training's autocast(float16)
+        # Step 2: Get question hidden state Qht (paper eq. 8)
+        inputs = tokenizer(f"Human: {question}\nAssistant: ", return_tensors="pt").to(device)
+        print(f"[STEP 2] Tokenized question: {inputs.input_ids.shape[1]} tokens")
+
+        if _zero_question:
+            # 4-bit quantization distorts Qht after 32 layers; zeros let the adapter
+            # rely on its trained learnable queries instead of corrupted hidden states.
+            question_hidden_state = torch.zeros(1, 4096, device=device, dtype=torch.float16)
+            print("[STEP 2] question_hidden_state: zeros (--zero_question)")
+        else:
+            print("[STEP 2] Running LLM forward pass for Qht...")
+            with torch.no_grad():
+                hidden_states = model(
+                    inputs.input_ids,
+                    attention_mask=inputs.attention_mask,
+                    output_hidden_states=True
+                ).hidden_states[-1]
+            question_hidden_state = hidden_states[:, -1, :].to(torch.float16)
+            qh_norm = question_hidden_state.norm().item()
+            print(f"[STEP 2] question_hidden_state norm: {qh_norm:.4f}  "
+                  f"min: {question_hidden_state.min().item():.4f}  "
+                  f"max: {question_hidden_state.max().item():.4f}")
+
+        # Step 3: Run adapter (protein_vector + Qht → 256 soft-prompt tokens)
+        print("[STEP 3] Running adapter...")
         protein_vector = protein_vector.half()
         with torch.no_grad():
             protein_embedding = adapter(protein_vector, question_hidden_state)
+        print(f"[STEP 3] protein_embedding shape: {protein_embedding.shape}  "
+              f"dtype: {protein_embedding.dtype}  "
+              f"norm(mean): {protein_embedding.norm(dim=-1).mean().item():.4f}  "
+              f"min: {protein_embedding.min().item():.4f}  "
+              f"max: {protein_embedding.max().item():.4f}")
 
-        # Step 4: Encode question text into embeddings
-        # PeftModel: model.base_model.model.model; plain LlamaForCausalLM: model.model
+        # Check for NaN/Inf — if present, adapter received bad input
+        if torch.isnan(protein_embedding).any():
+            print("[STEP 3] WARNING: protein_embedding contains NaN values!")
+        if torch.isinf(protein_embedding).any():
+            print("[STEP 3] WARNING: protein_embedding contains Inf values!")
+
+        # Step 4: Encode question text into token embeddings
+        # PeftModel: model.base_model.model.model.embed_tokens
+        # plain LlamaForCausalLM: model.model.embed_tokens
         try:
             embed_tokens = model.base_model.model.model.embed_tokens
         except AttributeError:
             embed_tokens = model.model.embed_tokens
         inputs_embeds = embed_tokens(inputs.input_ids)
-
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
 
-        # Diagnostic: print embedding norms
         prot_norm = protein_embedding.norm(dim=-1).mean().item()
         text_norm = inputs_embeds.norm(dim=-1).mean().item()
-        print(f"[DIAG] protein_embedding norm (mean): {prot_norm:.4f}")
-        print(f"[DIAG] text inputs_embeds norm (mean): {text_norm:.4f}")
-        print(f"[DIAG] norm ratio (prot/text): {prot_norm / (text_norm + 1e-8):.4f}")
+        print(f"[STEP 4] text inputs_embeds shape: {inputs_embeds.shape}  "
+              f"norm(mean): {text_norm:.4f}")
+        print(f"[DIAG]   protein_embedding norm : {prot_norm:.4f}")
+        print(f"[DIAG]   text_embeds norm       : {text_norm:.4f}")
+        print(f"[DIAG]   norm ratio (prot/text) : {prot_norm / (text_norm + 1e-8):.4f}  "
+              f"(ideally close to 1.0)")
 
-        # Step 5: Concatenate the protein embedding and text embedding
+        # Step 5: Prepend protein soft-prompt to question embeddings
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
         combined_attention_mask = torch.cat([
-            torch.ones((protein_embedding.size(0), protein_embedding.size(1)), device=device, dtype=inputs.attention_mask.dtype),
+            torch.ones((protein_embedding.size(0), protein_embedding.size(1)),
+                       device=device, dtype=inputs.attention_mask.dtype),
             inputs.attention_mask
         ], dim=1)
+        print(f"[STEP 5] combined_embeds shape: {combined_embeds.shape}")
 
+        if torch.cuda.is_available():
+            alloc = torch.cuda.memory_allocated() / 1024**3
+            reserv = torch.cuda.memory_reserved() / 1024**3
+            print(f"[STEP 5] GPU VRAM before generate: {alloc:.2f} GB alloc / {reserv:.2f} GB reserved")
+
+        # Step 6: Generate
+        print("[STEP 6] Generating response...")
         with torch.no_grad():
             generated_ids = model.generate(
                 inputs_embeds=combined_embeds,
@@ -248,17 +291,20 @@ def generate_answer(pdb_file_path, question):
                 repetition_penalty=1.5,
                 no_repeat_ngram_size=4,
             )
-        
+        print(f"[STEP 6] Generated {generated_ids.shape[1]} tokens")
+
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-        
-        # Extract the Assistant part of the answer
+        print(f"[STEP 6] Raw decoded response: {repr(response[:200])}")
+
         if "Assistant:" in response:
             response = response.split("Assistant:")[1].strip()
-        
+
+        print(f"[INFERENCE] Final answer: {response[:300]}")
+        print(f"{'='*60}\n")
         return response
+
     except Exception as e:
-        # Capture and print detailed error information
-        print(f"Error in generate_answer: {str(e)}")
+        print(f"[ERROR] generate_answer failed: {str(e)}")
         print(traceback.format_exc())
         return f"Error processing: {str(e)}"
 
