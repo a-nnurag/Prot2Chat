@@ -3,6 +3,9 @@ __pycache__/
 *.pyo
 CLAUDE.md
 
+# Environment files with secrets
+.env
+
 # Model weights and large files (download separately)
 Prot2Chat/prot2chat/base_model/
 Prot2Chat/prot2chat/lora_weights/

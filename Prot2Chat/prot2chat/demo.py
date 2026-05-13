@@ -11,6 +11,16 @@ import math
 from peft import LoraConfig, PeftModel
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load .env file from the same directory as this script (if present)
+_ENV_FILE = os.path.join(_SCRIPT_DIR, '.env')
+if os.path.isfile(_ENV_FILE):
+    with open(_ENV_FILE) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 # Dynamic positional encoding
 class DynamicPositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=512):
