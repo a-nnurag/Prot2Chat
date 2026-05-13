@@ -119,7 +119,14 @@ def fold_with_esmfold(sequence: str, out_path: str) -> bool:
     try:
         resp = requests.post(url, data=sequence, timeout=120,
                              headers={"Content-Type": "application/x-www-form-urlencoded"})
-        if resp.status_code == 200 and resp.text.startswith("ATOM"):
+        # Valid PDB starts with HEADER, ATOM, MODEL, or REMARK — not just ATOM
+        is_pdb = resp.status_code == 200 and (
+            resp.text.startswith("HEADER") or
+            resp.text.startswith("ATOM") or
+            resp.text.startswith("MODEL") or
+            "ATOM" in resp.text[:500]
+        )
+        if is_pdb:
             with open(out_path, "w") as f:
                 f.write(resp.text)
             return True
@@ -139,6 +146,7 @@ def fetch_alphafold_pdb(uniprot_id: str, out_path: str) -> bool:
             with open(out_path, "w") as f:
                 f.write(resp.text)
             return True
+        print(f"  [AlphaFold] HTTP {resp.status_code} for {uniprot_id}")
         return False
     except Exception as e:
         print(f"  [AlphaFold] Error: {e}")
