@@ -108,25 +108,28 @@ def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_q
     print(f"Loading model: {model_path}")
     if torch.cuda.is_available():
         if no_quant:
-            # float16 — matches training's autocast(float16); avoids quantization drift
-            print("Loading model in float16 (no quantization)")
+            # float16 with device_map=auto so it can offload layers to CPU RAM
+            # if GPU VRAM is insufficient (e.g. 6 GB). Eliminates quantization drift.
+            print("Loading model in float16 (no quantization, auto device map)")
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.float16,
-                device_map="cuda:0",
+                device_map="auto",
                 low_cpu_mem_usage=True,
             )
         else:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,  # float16 faster than bfloat16 on most consumer GPUs
+                # bfloat16 matches the model's native training dtype (LLaMA 3 is bf16).
+                # Using float16 here caused hidden-state drift that fed into the adapter.
+                bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 quantization_config=bnb_config,
-                device_map="cuda:0",
+                device_map="auto",
                 low_cpu_mem_usage=True,
             )
         torch.cuda.empty_cache()
@@ -193,7 +196,8 @@ def generate_answer(pdb_file_path, question):
         with torch.no_grad():
             hidden_states = model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True).hidden_states[-1]
         # [1, seq_len, 4096] → [1, 4096]: single vector as used in training
-        question_hidden_state = hidden_states[:, -1, :].half()
+        # Cast to float16 — adapter weights are float16; bfloat16 hidden states need conversion
+        question_hidden_state = hidden_states[:, -1, :].to(torch.float16)
 
         # Step 3: Run adapter in float16 matching training's autocast(float16)
         protein_vector = protein_vector.half()
@@ -242,7 +246,8 @@ def generate_answer(pdb_file_path, question):
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=128,
                 do_sample=False,
-                repetition_penalty=1.3,
+                repetition_penalty=1.5,
+                no_repeat_ngram_size=4,
             )
         
         response = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
