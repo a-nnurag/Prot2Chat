@@ -288,8 +288,10 @@ def generate_answer(pdb_file_path, question):
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 max_new_tokens=128,
-                do_sample=False,
-                repetition_penalty=1.5,
+                do_sample=True,       # sampling avoids greedy error lock-in under 4-bit quantization
+                temperature=0.3,      # low temperature = focused but not deterministic
+                top_p=0.9,
+                repetition_penalty=1.3,
                 no_repeat_ngram_size=4,
             )
         print(f"[STEP 6] Generated {generated_ids.shape[1]} tokens")
