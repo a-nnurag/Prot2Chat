@@ -196,7 +196,7 @@ def pdb_pipeline_fig():
     ]
     for (x, y, w, h, col, txt) in steps:
         r = plt.Rectangle((x, y), w, h, facecolor=col, edgecolor="white",
-                           linewidth=1.5, zorder=3, borderpad=0)
+                           linewidth=1.5, zorder=3, )
         ax.add_patch(r)
         ax.text(x+w/2, y+h/2, txt, ha="center", va="center",
                 fontsize=8.5, color="white", fontweight="bold",
