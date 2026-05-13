@@ -39,22 +39,51 @@ PAPER_SCORES = {
 # ── Dataset loading ───────────────────────────────────────────────────────────────────
 
 def load_test_samples(n_samples: int, seed: int = 42):
-    """Load n_samples from Mol-Instructions protein test set."""
-    print(f"[DATASET] Loading Mol-Instructions protein test set from HuggingFace...")
-    from datasets import load_dataset
-    ds = load_dataset("zjunlp/Mol-Instructions", "Protein-oriented instructions",
-                      split="test", trust_remote_code=True)
-    print(f"[DATASET] Total test samples: {len(ds)}")
+    """Load n_samples from Mol-Instructions protein test set (downloads ZIP directly)."""
+    import zipfile
+    from huggingface_hub import hf_hub_download
 
-    # Filter to protein function description tasks (have clear reference answers)
-    samples = [s for s in ds if s.get("input", "").strip()]
-    print(f"[DATASET] Samples with protein input: {len(samples)}")
+    print("[DATASET] Downloading Protein-oriented_Instructions.zip from HuggingFace...")
+    zip_path = hf_hub_download(
+        repo_id="zjunlp/Mol-Instructions",
+        filename="data/Protein-oriented_Instructions.zip",
+        repo_type="dataset",
+    )
+    print(f"[DATASET] ZIP downloaded: {zip_path}")
 
-    # Filter by sequence length for ESMFold compatibility (<=500 AA)
+    # Find the test JSON inside the ZIP
+    all_samples = []
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        print(f"[DATASET] Files in ZIP: {names[:20]}")
+        # Prefer a dedicated test split; fall back to train if absent
+        test_files = [n for n in names if "test" in n.lower() and n.endswith(".json")]
+        if not test_files:
+            test_files = [n for n in names if n.endswith(".json")]
+        print(f"[DATASET] Using files: {test_files}")
+        for fname in test_files:
+            with zf.open(fname) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    all_samples.extend(data)
+                elif isinstance(data, dict):
+                    # Some dumps wrap records under a key
+                    for v in data.values():
+                        if isinstance(v, list):
+                            all_samples.extend(v)
+
+    print(f"[DATASET] Total samples loaded: {len(all_samples)}")
+
+    # Filter to entries with a protein AA sequence as input
     aa_pattern = re.compile(r'^[ACDEFGHIKLMNPQRSTVWY]+$', re.IGNORECASE)
-    valid = [s for s in samples
-             if aa_pattern.match(s["input"].strip()) and len(s["input"].strip()) <= 500]
-    print(f"[DATASET] Samples with valid AA sequence (<=500): {len(valid)}")
+    valid = [
+        s for s in all_samples
+        if isinstance(s.get("input", ""), str)
+        and aa_pattern.match(s["input"].strip())
+        and 20 <= len(s["input"].strip()) <= 500
+        and s.get("output", "").strip()
+    ]
+    print(f"[DATASET] Valid AA-sequence samples (20–500 AA): {len(valid)}")
 
     random.seed(seed)
     selected = random.sample(valid, min(n_samples, len(valid)))
