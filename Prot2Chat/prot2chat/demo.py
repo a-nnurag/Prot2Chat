@@ -191,9 +191,21 @@ def generate_answer(pdb_file_path, question):
             protein_embedding = adapter(protein_vector, question_hidden_state)
 
         # Step 4: Encode question text into embeddings
-        inputs_embeds = model.base_model.model.model.embed_tokens(inputs.input_ids)
+        # PeftModel: model.base_model.model.model; plain LlamaForCausalLM: model.model
+        try:
+            embed_tokens = model.base_model.model.model.embed_tokens
+        except AttributeError:
+            embed_tokens = model.model.embed_tokens
+        inputs_embeds = embed_tokens(inputs.input_ids)
 
         protein_embedding = protein_embedding.to(dtype=inputs_embeds.dtype)
+
+        # Diagnostic: print embedding norms to detect scale mismatch
+        prot_norm = protein_embedding.norm(dim=-1).mean().item()
+        text_norm = inputs_embeds.norm(dim=-1).mean().item()
+        print(f"[DIAG] protein_embedding norm (mean): {prot_norm:.4f}")
+        print(f"[DIAG] text inputs_embeds norm (mean): {text_norm:.4f}")
+        print(f"[DIAG] protein_embedding min/max: {protein_embedding.min().item():.4f} / {protein_embedding.max().item():.4f}")
 
         # Step 5: Concatenate the protein embedding and text embedding
         combined_embeds = torch.cat([protein_embedding, inputs_embeds], dim=1)
