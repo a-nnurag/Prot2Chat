@@ -186,16 +186,13 @@ def rebuild(doc: Document, taxonomy_path: str):
                 return i
         return -1
 
-    def clear_range(start, end):
-        """Delete paragraphs in [start, end) by emptying their text."""
-        for i in range(start, end):
-            try:
-                p = paras[i]
-                for r in p.runs:
-                    r.text = ""
-                p.text = ""
-            except Exception:
-                pass
+    def delete_range(start, end):
+        """Physically remove paragraphs [start, end) from the document XML."""
+        elements = [paras[i]._element for i in range(start, end)]
+        for elem in elements:
+            parent = elem.getparent()
+            if parent is not None:
+                parent.remove(elem)
 
     def replace_para(idx, text, size=11, bold=False, style="Normal"):
         p = paras[idx]
@@ -231,16 +228,8 @@ def rebuild(doc: Document, taxonomy_path: str):
         print("[WARN] Could not locate Chapter 3 or 4")
         return
 
-    # Clear all of chapter 3 content
-    for i in range(ch3_idx + 1, ch4_idx):
-        try:
-            p = paras[i]
-            for r in p.runs:
-                r.text = ""
-            if p.text:
-                p.text = ""
-        except Exception:
-            pass
+    # Remove all old chapter 3 paragraphs from the XML
+    delete_range(ch3_idx + 1, ch4_idx)
 
     # Insert new Chapter 3 content BEFORE ch4 (using XML insertion)
     ch4_element = paras[ch4_idx]._element
@@ -498,16 +487,8 @@ def rebuild(doc: Document, taxonomy_path: str):
         print("[WARN] Could not locate Chapter 4 or 5")
         return
 
-    # Clear ch4 content
-    for i in range(ch4_start + 1, ch5_start):
-        try:
-            p = paras[i]
-            for r in p.runs:
-                r.text = ""
-            if p.text:
-                p.text = ""
-        except Exception:
-            pass
+    # Remove all old chapter 4 paragraphs from the XML
+    delete_range(ch4_start + 1, ch5_start)
 
     ch5_element = paras[ch5_start]._element
     be2 = ch5_element
