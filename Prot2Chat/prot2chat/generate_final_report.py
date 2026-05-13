@@ -339,7 +339,7 @@ def cover_page(doc):
 def certificate(doc):
     page_break(doc)
     para(doc, "CERTIFICATE", size=SZ_COVER_TITLE, bold=True,
-         center=True, space_before=20, space_after=20, style_name="Default")
+         center=True, space_before=20, space_after=20)
     body(doc, "This is to certify that the project entitled "
          "\"ProteinTalk: Multimodal Protein Structure Q&A System\" "
          "is submitted by Anurag Chaurasia (2022ccsb098), "
@@ -367,7 +367,7 @@ def certificate(doc):
 def self_attestation(doc):
     page_break(doc)
     para(doc, "SELF ATTESTATION", size=SZ_COVER_TITLE,
-         center=True, space_before=20, space_after=20, style_name="Default")
+         center=True, space_before=20, space_after=20)
     body(doc, "This is to certify that we have personally worked on the dissertation "
          "entitled \"ProteinTalk: Multimodal Protein Structure Q&A System\" and the "
          "work presented in this report is genuine and original to the best of our knowledge.")
@@ -375,7 +375,7 @@ def self_attestation(doc):
     body(doc, "Any other data and information in this report, which has been collected "
          "from an outside agency, has been duly acknowledged.")
     para(doc, "", space_after=20)
-    para(doc, "STUDENTS:", size=SZ_BODY, bold=False, style_name="Default")
+    para(doc, "STUDENTS:", size=SZ_BODY, bold=False, style_name="Normal")
     for name, roll in [
         ("ANURAG CHAURASIA", "2022ccsb098"),
         ("RAJESH KUMAR",     "2022csb094"),
@@ -383,8 +383,8 @@ def self_attestation(doc):
     ]:
         para(doc, "", space_after=10)
         para(doc, "---------------------------------------------------------",
-             size=SZ_BODY, style_name="Default")
-        para(doc, f"{name} ({roll})", size=SZ_BODY, style_name="Default")
+             size=SZ_BODY, style_name="Normal")
+        para(doc, f"{name} ({roll})", size=SZ_BODY, style_name="Normal")
     para(doc, "", space_after=16)
     body(doc, "Date: _____ / _____ / 2026")
     body(doc, "Place: IIEST Shibpur")
