@@ -96,15 +96,117 @@ tokenizer = None
 adapter = None
 device = None
 _zero_question = False
+_use_groq = False
+_groq_api_key = None
+_groq_model = "llama-3.3-70b-versatile"
+
+
+def extract_protein_metadata(pdb_file_path):
+    """Extract chain IDs, sequences, and residue counts from a PDB file."""
+    try:
+        from biotite.structure.io import pdb as pdb_io
+        from biotite.structure import filter_amino_acids, get_chains
+        from biotite.structure.residues import get_residues
+
+        pdb_file = pdb_io.PDBFile.read(pdb_file_path)
+        structure = pdb_file.get_structure(model=1)
+        protein = structure[filter_amino_acids(structure)]
+        chains = get_chains(protein)
+        res_ids, res_names = get_residues(protein)
+        total_residues = len(res_ids)
+
+        three_to_one = {
+            'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
+            'GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F',
+            'PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y','VAL':'V',
+        }
+
+        chain_info = {}
+        for chain_id in chains:
+            mask = protein.chain_id == chain_id
+            chain_atoms = protein[mask]
+            c_res_ids, c_res_names = get_residues(chain_atoms)
+            seq = ''.join(three_to_one.get(r, 'X') for r in c_res_names)
+            chain_info[chain_id] = {'length': len(c_res_ids), 'sequence': seq}
+
+        return {'chains': list(chains), 'total_residues': total_residues, 'chain_info': chain_info}
+    except Exception as e:
+        print(f"[METADATA] Could not extract protein metadata: {e}")
+        return {'chains': [], 'total_residues': 0, 'chain_info': {}}
+
+
+def _call_groq(question, metadata, prot_norm_mean=None):
+    """Send protein metadata + question to Groq LLaMA and return the answer."""
+    try:
+        from groq import Groq
+    except ImportError:
+        return "Error: groq package not installed. Run: pip install groq"
+
+    context_lines = [f"Protein file analysis:"]
+    context_lines.append(f"  Total residues: {metadata['total_residues']}")
+    context_lines.append(f"  Chains: {', '.join(metadata['chains']) or 'N/A'}")
+    for chain_id, info in metadata['chain_info'].items():
+        seq = info['sequence']
+        display_seq = seq[:60] + ('...' if len(seq) > 60 else '')
+        context_lines.append(f"  Chain {chain_id} ({info['length']} residues): {display_seq}")
+    if prot_norm_mean is not None:
+        context_lines.append(f"  ProteinMPNN structural embedding mean norm: {prot_norm_mean:.4f}")
+
+    context = '\n'.join(context_lines)
+    print(f"[GROQ] Sending to Groq ({_groq_model}):\n{context}\nQuestion: {question}")
+
+    client = Groq(api_key=_groq_api_key)
+    resp = client.chat.completions.create(
+        model=_groq_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert protein biologist and structural bioinformatics specialist. "
+                    "The user has uploaded a PDB file that was processed by the ProteinMPNN structural "
+                    "analysis pipeline (9-model ensemble producing 1152-dim per-residue embeddings). "
+                    "Answer the user's question about the protein based on the provided structural context. "
+                    "Be concise, accurate, and scientifically precise. Answer in 3-5 sentences."
+                ),
+            },
+            {"role": "user", "content": f"{context}\n\nQuestion: {question}"},
+        ],
+        temperature=0.3,
+        max_tokens=512,
+    )
+    answer = resp.choices[0].message.content.strip()
+    print(f"[GROQ] Answer: {answer[:300]}")
+    return answer
 
 # Initialize the model and adapter
-def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_quant=False, zero_question=False):
-    global model, tokenizer, adapter, device, _zero_question
-    _zero_question = zero_question
+def initialize_models(model_path, lora_path, adapter_path, skip_lora=False, no_quant=False,
+                      zero_question=False, use_groq=False, groq_api_key=None,
+                      groq_model="llama-3.3-70b-versatile"):
+    global model, tokenizer, adapter, device, _zero_question, _use_groq, _groq_api_key, _groq_model
+    _use_groq = use_groq
+    _groq_api_key = groq_api_key
+    _groq_model = groq_model
+    # Groq mode forces zero_question because local LLaMA is not loaded
+    _zero_question = True if use_groq else zero_question
 
     # Set the device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+
+    if use_groq:
+        print("[GROQ MODE] Skipping local LLaMA — generation will use Groq API")
+        print(f"[GROQ MODE] Model: {groq_model}")
+        model = None
+        tokenizer = None
+        print(f"Loading adapter model: {adapter_path}")
+        adapter = ProteinStructureSequenceAdapter(
+            input_dim=1152, output_dim=4096, num_heads=16, num_queries=256, max_len=512)
+        checkpoint = torch.load(adapter_path, map_location="cpu", weights_only=False)
+        adapter.load_state_dict(checkpoint['adapter_model_weight'])
+        adapter = adapter.to(device).half()
+        adapter.eval()
+        print("Adapter loaded. Ready in Groq mode.")
+        return
 
     # Load model L (LLaMA model)
     print(f"Loading model: {model_path}")
@@ -184,8 +286,10 @@ def generate_answer(pdb_file_path, question):
     print(f"{'='*60}")
 
     # Ensure the models are loaded
-    if model is None or tokenizer is None or adapter is None:
+    if not _use_groq and (model is None or tokenizer is None or adapter is None):
         return "Error: Models are not initialized"
+    if _use_groq and adapter is None:
+        return "Error: Adapter model is not initialized"
 
     try:
         # Step 1: Process the PDB file → protein embedding (1152-dim per residue)
@@ -195,6 +299,7 @@ def generate_answer(pdb_file_path, question):
               f"dtype: {protein_vector.dtype}  "
               f"norm(mean): {protein_vector.norm(dim=-1).mean().item():.4f}")
 
+        prot_norm_mean = protein_vector.norm(dim=-1).mean().item()
         max_length = 512
         orig_len = protein_vector.size(1)
         if max_length > orig_len:
@@ -205,6 +310,17 @@ def generate_answer(pdb_file_path, question):
         else:
             protein_vector = protein_vector[:, :max_length, :]
             print(f"[STEP 1] Truncated from {orig_len} → {max_length} residues")
+
+        # Groq branch: extract metadata and call Groq API for clean generation
+        if _use_groq:
+            print("[GROQ] Extracting protein metadata from PDB...")
+            metadata = extract_protein_metadata(pdb_file_path)
+            print(f"[GROQ] Metadata: {metadata['total_residues']} residues, "
+                  f"chains: {metadata['chains']}")
+            answer = _call_groq(question, metadata, prot_norm_mean=prot_norm_mean)
+            print(f"[INFERENCE] Final answer (Groq): {answer[:300]}")
+            print(f"{'='*60}\n")
+            return answer
 
         # Step 2: Get question hidden state Qht (paper eq. 8)
         inputs = tokenizer(f"Human: {question}\nAssistant: ", return_tensors="pt").to(device)
@@ -453,15 +569,28 @@ if __name__ == '__main__':
                         help='Load model in float16 instead of 4-bit. Uses device_map=auto to offload layers to CPU when VRAM is limited. Matches training precision; recommended if you have >=16 GB system RAM.')
     parser.add_argument('--zero_question', action='store_true',
                         help='Use a zero vector for question conditioning instead of LLM hidden states. Bypasses 4-bit quantization distortion of Qht. Try this first on low-VRAM (<=8 GB) systems.')
+    parser.add_argument('--use_groq', action='store_true',
+                        help='Use Groq API (LLaMA 3) for generation instead of local LLaMA. Skips local model loading — only the adapter and ProteinMPNN pipeline run locally. Requires --groq_api_key or GROQ_API_KEY env var.')
+    parser.add_argument('--groq_api_key', type=str,
+                        default=os.environ.get('GROQ_API_KEY', ''),
+                        help='Groq API key. Can also be set via GROQ_API_KEY environment variable.')
+    parser.add_argument('--groq_model', type=str, default='llama-3.3-70b-versatile',
+                        help='Groq model to use (default: llama-3.3-70b-versatile). Other options: llama3-8b-8192, llama3-70b-8192.')
 
     args = parser.parse_args()
 
     if args.gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
+    if args.use_groq and not args.groq_api_key:
+        print("ERROR: --use_groq requires a Groq API key. Pass --groq_api_key <key> or set GROQ_API_KEY env var.")
+        sys.exit(1)
+
     initialize_models(args.model_path, args.lora_path, args.adapter_path,
                       skip_lora=args.no_lora, no_quant=args.no_quant,
-                      zero_question=args.zero_question)
+                      zero_question=args.zero_question,
+                      use_groq=args.use_groq, groq_api_key=args.groq_api_key,
+                      groq_model=args.groq_model)
     
     
     app = create_app()
